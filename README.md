@@ -36,6 +36,14 @@ Reports are written only when `--csv` or `--json` is supplied. The project does
 not create or manage a site registry; invoke the script with the sitemap URL
 you want to warm.
 
+## Tests
+
+Run the dependency-free test suite with:
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
 ## Requirements
 
 Python 3.8 or newer. The script uses only the Python standard library.

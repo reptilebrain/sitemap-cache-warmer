@@ -1,5 +1,9 @@
 # Sitemap Cache Warmer
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+[![No external dependencies](https://img.shields.io/badge/dependencies-standard%20library-success.svg)](https://docs.python.org/3/library/)
+
 `warm-cache.py` is a local, dependency-free sitemap cache warmer. It fetches
 pages listed in a sitemap, reports HTTP and cache headers, and optionally
 fetches images referenced by those pages.

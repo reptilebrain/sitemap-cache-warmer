@@ -141,6 +141,21 @@ def write_reports(rows, csv_path=None, json_path=None):
             output.write('\n')
 
 
+def completed_tasks(items, worker, max_workers):
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    futures = {pool.submit(worker, item): item for item in items}
+    try:
+        for future in as_completed(futures):
+            yield future, futures[future]
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        pool.shutdown(wait=False)
+        raise
+    else:
+        pool.shutdown()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('sitemap', help='Full URL to sitemap.xml or sitemap index')
@@ -209,52 +224,47 @@ def main(argv=None):
                 200 <= status < 300 and not args.no_images) else set()
             return url, lastmod, status, headers, effective, elapsed, found
 
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(get_page, item): item for item in page_entries}
-            for future in as_completed(futures):
-                url = futures[future][0]
-                count += 1
-                try:
-                    url, lastmod, status, headers, effective, elapsed, found = future.result()
-                    rows.append(report_row('page', url, status, headers, elapsed,
-                                           effective, lastmod=lastmod))
-                    print(f'{status:<5} {clean(headers.get("CF-Cache-Status")):<12} '
-                          f'{elapsed:8.3f} {clean(headers.get("Age")):>7}  {clean(url)}', flush=True)
-                    print(f'      Last-Modified: {clean(headers.get("Last-Modified"))}'
-                          f' | Sitemap lastmod: {clean(lastmod)}', flush=True)
-                    if effective != url:
-                        print(f'      Redirect -> {clean(effective)}', flush=True)
-                    if not 200 <= status < 300:
-                        failures += 1
-                    images.update(found)
-                except (OSError, ValueError) as exc:
+        for future, item in completed_tasks(page_entries, get_page, args.workers):
+            url = item[0]
+            count += 1
+            try:
+                url, lastmod, status, headers, effective, elapsed, found = future.result()
+                rows.append(report_row('page', url, status, headers, elapsed,
+                                       effective, lastmod=lastmod))
+                print(f'{status:<5} {clean(headers.get("CF-Cache-Status")):<12} '
+                      f'{elapsed:8.3f} {clean(headers.get("Age")):>7}  {clean(url)}', flush=True)
+                print(f'      Last-Modified: {clean(headers.get("Last-Modified"))}'
+                      f' | Sitemap lastmod: {clean(lastmod)}', flush=True)
+                if effective != url:
+                    print(f'      Redirect -> {clean(effective)}', flush=True)
+                if not 200 <= status < 300:
                     failures += 1
-                    rows.append(report_row('page', url, error=exc))
-                    print(f'ERROR {clean(url)}: {clean(exc)}', flush=True)
+                images.update(found)
+            except (OSError, ValueError) as exc:
+                failures += 1
+                rows.append(report_row('page', url, error=exc))
+                print(f'ERROR {clean(url)}: {clean(exc)}', flush=True)
 
     if images:
         def get_image(image_url):
             return image_url, fetch(image_url, args.timeout, pacer=pacer)
 
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(get_image, url): url for url in images}
-            for future in as_completed(futures):
-                image_url = futures[future]
-                try:
-                    image_url, (status, headers, effective, elapsed, _) = future.result()
-                    rows.append(report_row('image', image_url, status, headers,
-                                           elapsed, effective))
-                    print(f'IMG   {clean(headers.get("CF-Cache-Status")):<12} '
-                          f'{elapsed:8.3f} {clean(headers.get("Age")):>7}  '
-                          f'{clean(image_url)}', flush=True)
-                    if effective != image_url:
-                        print(f'      Redirect -> {clean(effective)}', flush=True)
-                    if not 200 <= status < 300:
-                        image_failures += 1
-                except (OSError, ValueError) as exc:
+        for future, image_url in completed_tasks(images, get_image, args.workers):
+            try:
+                image_url, (status, headers, effective, elapsed, _) = future.result()
+                rows.append(report_row('image', image_url, status, headers,
+                                       elapsed, effective))
+                print(f'IMG   {clean(headers.get("CF-Cache-Status")):<12} '
+                      f'{elapsed:8.3f} {clean(headers.get("Age")):>7}  '
+                      f'{clean(image_url)}', flush=True)
+                if effective != image_url:
+                    print(f'      Redirect -> {clean(effective)}', flush=True)
+                if not 200 <= status < 300:
                     image_failures += 1
-                    rows.append(report_row('image', image_url, error=exc))
-                    print(f'IMG ERROR {clean(image_url)}: {clean(exc)}', flush=True)
+            except (OSError, ValueError) as exc:
+                image_failures += 1
+                rows.append(report_row('image', image_url, error=exc))
+                print(f'IMG ERROR {clean(image_url)}: {clean(exc)}', flush=True)
     print(f'\nDone: {count} pages, {failures} failed / non-2xx, '
           f'{len(images)} unique images, {image_failures} image failures, '
           f'{map_failures} sitemap errors.', flush=True)

@@ -22,9 +22,10 @@ Useful options:
 ```
 
 The script supports sitemap indexes, gzip-compressed responses, redirects,
-Cloudflare cache headers, image URLs in common HTML attributes, and deduplicates
-pages, sitemaps, and images. It returns a non-zero status when a sitemap, page,
-or image fails.
+common cache-status headers, image URLs in common HTML attributes, and
+deduplicates pages, sitemaps, and images. Reports include cache status and
+source header, age, cache directives, validators, expiry, and `Vary`.
+It returns a non-zero status when a sitemap, page, or image fails.
 
 Reports are written only when `--csv` or `--json` is supplied. The project does
 not create or manage a site registry; invoke the script with the sitemap URL

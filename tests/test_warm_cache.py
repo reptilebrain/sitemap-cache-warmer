@@ -19,6 +19,8 @@ MODULE_SPEC.loader.exec_module(warm_cache)
 
 
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
+    image_requests = 0
+
     def do_GET(self):
         if self.path == '/sitemap.xml':
             body = (
@@ -31,6 +33,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             body = b'<html><body><img src="/image.webp"></body></html>'
             content_type = 'text/html; charset=utf-8'
         elif self.path == '/image.webp':
+            type(self).image_requests += 1
             body = b'image data'
             content_type = 'image/webp'
         else:
@@ -80,6 +83,15 @@ class WarmCacheTests(unittest.TestCase):
         self.assertEqual(fetch.call_count, 2)
         sleep.assert_called_once_with(0.5)
 
+    def test_fetch_with_retries_does_not_retry_permanent_status(self):
+        headers = Message()
+        response = (404, headers, 'https://example.com/', 0.1, b'')
+        with mock.patch.object(warm_cache, 'fetch', return_value=response) as fetch:
+            result = warm_cache.fetch_with_retries(
+                'https://example.com/', 30, retries=1)
+        self.assertEqual(result[0], 404)
+        fetch.assert_called_once()
+
     def test_image_urls_resolves_supported_attributes(self):
         headers = Message()
         headers['Content-Type'] = 'text/html; charset=utf-8'
@@ -128,6 +140,7 @@ class WarmCacheTests(unittest.TestCase):
             self.assertIn('https://example.com/z.webp', csv_lines[-1])
 
     def test_main_warms_pages_and_images_and_writes_metadata(self):
+        FixtureHandler.image_requests = 0
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), FixtureHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -148,6 +161,29 @@ class WarmCacheTests(unittest.TestCase):
                 self.assertTrue(all(row['cache_status'] == 'HIT' for row in rows))
                 self.assertTrue(all(row['age_seconds'] == '12' for row in rows))
                 self.assertIn('CACHE', output.getvalue())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_main_can_skip_images(self):
+        FixtureHandler.image_requests = 0
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), FixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            sitemap = f'http://127.0.0.1:{server.server_port}/sitemap.xml'
+            with tempfile.TemporaryDirectory() as directory:
+                report_path = Path(directory) / 'report.json'
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    result = warm_cache.main([
+                        sitemap, '--delay', '0', '--workers', '1',
+                        '--no-images', '--json', str(report_path),
+                    ])
+                self.assertEqual(result, 0)
+                rows = json.loads(report_path.read_text(encoding='utf-8'))
+                self.assertEqual({row['type'] for row in rows}, {'page'})
+                self.assertEqual(FixtureHandler.image_requests, 0)
         finally:
             server.shutdown()
             server.server_close()

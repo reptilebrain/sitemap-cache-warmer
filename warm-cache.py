@@ -20,6 +20,9 @@ import xml.etree.ElementTree as ET
 DEFAULT_DELAY = 0.5
 DEFAULT_WORKERS = 12
 DEFAULT_TIMEOUT = 30
+DEFAULT_RETRIES = 1
+RETRY_BACKOFF = 0.5
+RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 CACHE_STATUS_HEADERS = (
     'Cache-Status', 'CF-Cache-Status', 'CDN-Cache-Status',
     'X-Cache-Status', 'X-Cache',
@@ -95,6 +98,22 @@ def fetch(url, timeout, keep_body=False, pacer=None):
             body = gzip.decompress(body)
         return (response.status, response.headers, response.geturl(),
                 time.monotonic() - start, body)
+
+
+def fetch_with_retries(url, timeout, keep_body=False, pacer=None,
+                       retries=DEFAULT_RETRIES):
+    attempt = 0
+    while True:
+        try:
+            result = fetch(url, timeout, keep_body, pacer)
+        except OSError:
+            if attempt >= retries:
+                raise
+        else:
+            if result[0] not in RETRYABLE_STATUS_CODES or attempt >= retries:
+                return result
+        attempt += 1
+        time.sleep(RETRY_BACKOFF * attempt)
 
 
 class ImageFinder(HTMLParser):
@@ -218,6 +237,8 @@ def main(argv=None):
                              f'(default: {DEFAULT_WORKERS})')
     parser.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT,
                         help=f'Socket timeout in seconds (default: {DEFAULT_TIMEOUT})')
+    parser.add_argument('--retries', type=int, default=DEFAULT_RETRIES,
+                        help=f'Retries for transient failures (default: {DEFAULT_RETRIES})')
     parser.add_argument('--no-images', action='store_true',
                         help='Do not fetch images referenced by pages')
     parser.add_argument('--verbose', action='store_true',
@@ -225,8 +246,8 @@ def main(argv=None):
     parser.add_argument('--csv', metavar='FILE', help='Write a CSV report')
     parser.add_argument('--json', metavar='FILE', help='Write a JSON report')
     args = parser.parse_args(argv)
-    if args.timeout <= 0 or args.workers <= 0:
-        parser.error('Timeout and workers must be > 0')
+    if args.timeout <= 0 or args.workers <= 0 or args.retries < 0:
+        parser.error('Timeout and workers must be > 0; retries must be >= 0')
     pacer = RequestPacer(args.delay)
     maps, pages, images = set(), set(), set()
     rows = []
@@ -240,7 +261,8 @@ def main(argv=None):
         maps.add(sitemap)
         print(f'Reading sitemap: {clean(sitemap)}', file=sys.stderr, flush=True)
         try:
-            status, _, _, _, body = fetch(sitemap, args.timeout, True, pacer)
+            status, _, _, _, body = fetch_with_retries(
+                sitemap, args.timeout, True, pacer, args.retries)
             if not 200 <= status < 300:
                 raise ValueError(f'HTTP {status}')
             root = ET.fromstring(body)
@@ -273,8 +295,8 @@ def main(argv=None):
 
         def get_page(item):
             url, lastmod = item
-            status, headers, effective, elapsed, body = fetch(
-                url, args.timeout, not args.no_images, pacer)
+            status, headers, effective, elapsed, body = fetch_with_retries(
+                url, args.timeout, not args.no_images, pacer, args.retries)
             found = image_urls(body, headers, effective) if (
                 200 <= status < 300 and not args.no_images) else set()
             return url, lastmod, status, headers, effective, elapsed, found
@@ -306,7 +328,8 @@ def main(argv=None):
 
     if images:
         def get_image(image_url):
-            return image_url, fetch(image_url, args.timeout, pacer=pacer)
+            return image_url, fetch_with_retries(
+                image_url, args.timeout, pacer=pacer, retries=args.retries)
 
         for future, image_url in completed_tasks(images, get_image, args.workers):
             try:

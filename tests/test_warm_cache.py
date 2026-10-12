@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).parents[1] / 'warm-cache.py'
@@ -64,6 +65,20 @@ class WarmCacheTests(unittest.TestCase):
             warm_cache.cache_details(headers),
             ('HIT', 'Cache-Status: edge; hit'),
         )
+
+    def test_fetch_with_retries_retries_transient_status(self):
+        headers = Message()
+        responses = [
+            (503, headers, 'https://example.com/', 0.1, b''),
+            (200, headers, 'https://example.com/', 0.1, b'ok'),
+        ]
+        with mock.patch.object(warm_cache, 'fetch', side_effect=responses) as fetch:
+            with mock.patch.object(warm_cache.time, 'sleep') as sleep:
+                result = warm_cache.fetch_with_retries(
+                    'https://example.com/', 30, retries=1)
+        self.assertEqual(result[0], 200)
+        self.assertEqual(fetch.call_count, 2)
+        sleep.assert_called_once_with(0.5)
 
     def test_image_urls_resolves_supported_attributes(self):
         headers = Message()

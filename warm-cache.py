@@ -211,6 +211,8 @@ def main(argv=None):
                         help='Socket timeout in seconds (default: 30)')
     parser.add_argument('--no-images', action='store_true',
                         help='Do not fetch images referenced by pages')
+    parser.add_argument('--verbose', action='store_true',
+                        help='Show detailed cache and modification headers')
     parser.add_argument('--csv', metavar='FILE', help='Write a CSV report')
     parser.add_argument('--json', metavar='FILE', help='Write a JSON report')
     args = parser.parse_args(argv)
@@ -278,12 +280,13 @@ def main(argv=None):
                                        effective, lastmod=lastmod))
                 print(f'{status:<5} {clean(cache_status):<12} '
                       f'{elapsed:8.3f} {clean(headers.get("Age")):>7}  {clean(url)}', flush=True)
-                print(f'      Cache header: {clean(cache_header)}'
-                      f' | Cache-Control: {clean(headers.get("Cache-Control"))}', flush=True)
-                print(f'      Last-Modified: {clean(headers.get("Last-Modified"))}'
-                      f' | Sitemap lastmod: {clean(lastmod)}', flush=True)
-                if effective != url:
-                    print(f'      Redirect -> {clean(effective)}', flush=True)
+                if args.verbose:
+                    print(f'      Cache header: {clean(cache_header)}'
+                          f' | Cache-Control: {clean(headers.get("Cache-Control"))}', flush=True)
+                    print(f'      Last-Modified: {clean(headers.get("Last-Modified"))}'
+                          f' | Sitemap lastmod: {clean(lastmod)}', flush=True)
+                    if effective != url:
+                        print(f'      Redirect -> {clean(effective)}', flush=True)
                 if not 200 <= status < 300:
                     failures += 1
                 images.update(found)
@@ -305,10 +308,11 @@ def main(argv=None):
                 print(f'IMG   {clean(cache_status):<12} '
                       f'{elapsed:8.3f} {clean(headers.get("Age")):>7}  '
                       f'{clean(image_url)}', flush=True)
-                print(f'      Cache header: {clean(cache_header)}'
-                      f' | Cache-Control: {clean(headers.get("Cache-Control"))}', flush=True)
-                if effective != image_url:
-                    print(f'      Redirect -> {clean(effective)}', flush=True)
+                if args.verbose:
+                    print(f'      Cache header: {clean(cache_header)}'
+                          f' | Cache-Control: {clean(headers.get("Cache-Control"))}', flush=True)
+                    if effective != image_url:
+                        print(f'      Redirect -> {clean(effective)}', flush=True)
                 if not 200 <= status < 300:
                     image_failures += 1
             except (OSError, ValueError) as exc:

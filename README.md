@@ -17,9 +17,13 @@ Useful options:
 --delay SECONDS    Minimum spacing in 0.1-second increments (default: 0.5)
 --timeout SECONDS  Socket timeout (default: 30)
 --no-images        Skip images referenced by pages
+--verbose          Show detailed cache and modification headers
 --csv FILE         Write a CSV report
 --json FILE        Write a JSON report
 ```
+
+The terminal output stays compact by default. Use `--verbose` for detailed
+headers; JSON and CSV reports always include the full metadata.
 
 The script supports sitemap indexes, gzip-compressed responses, redirects,
 common cache-status headers, image URLs in common HTML attributes, and

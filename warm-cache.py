@@ -18,6 +18,8 @@ import xml.etree.ElementTree as ET
 
 
 DEFAULT_DELAY = 0.5
+DEFAULT_WORKERS = 12
+DEFAULT_TIMEOUT = 30
 CACHE_STATUS_HEADERS = (
     'Cache-Status', 'CF-Cache-Status', 'CDN-Cache-Status',
     'X-Cache-Status', 'X-Cache',
@@ -205,10 +207,11 @@ def main(argv=None):
     parser.add_argument('--delay', type=parse_delay, default=DEFAULT_DELAY,
                         help=f'Minimum spacing between request starts in 0.1-second '
                              f'increments (default: {DEFAULT_DELAY:.1f})')
-    parser.add_argument('--workers', type=int, default=12,
-                        help='Maximum concurrent page/image requests (default: 12)')
-    parser.add_argument('--timeout', type=float, default=30,
-                        help='Socket timeout in seconds (default: 30)')
+    parser.add_argument('--workers', type=int, default=DEFAULT_WORKERS,
+                        help=f'Maximum concurrent page/image requests '
+                             f'(default: {DEFAULT_WORKERS})')
+    parser.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT,
+                        help=f'Socket timeout in seconds (default: {DEFAULT_TIMEOUT})')
     parser.add_argument('--no-images', action='store_true',
                         help='Do not fetch images referenced by pages')
     parser.add_argument('--verbose', action='store_true',

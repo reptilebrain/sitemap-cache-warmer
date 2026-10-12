@@ -14,8 +14,9 @@ Useful options:
 
 ```text
 --workers N        Maximum concurrent page/image requests (default: 12)
---delay SECONDS    Minimum spacing in 0.1-second increments (default: 0.5)
---timeout SECONDS  Socket timeout (default: 30)
+--delay SECONDS    Minimum spacing between requests, in 0.1-second increments
+                   (default: 0.5; for example: --delay 0.5)
+--timeout SECONDS  Socket timeout per request (default: 30)
 --no-images        Skip images referenced by pages
 --verbose          Show detailed cache and modification headers
 --csv FILE         Write a CSV report

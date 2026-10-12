@@ -87,6 +87,31 @@ class WarmCacheTests(unittest.TestCase):
             },
         )
 
+    def test_reports_are_sorted_by_type_and_url(self):
+        rows = [
+            warm_cache.report_row('image', 'https://example.com/z.webp'),
+            warm_cache.report_row('page', 'https://example.com/z'),
+            warm_cache.report_row('page', 'https://example.com/a'),
+            warm_cache.report_row('sitemap', 'https://example.com/sitemap.xml'),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / 'report.json'
+            csv_path = Path(directory) / 'report.csv'
+            warm_cache.write_reports(rows, csv_path, json_path)
+            json_rows = json.loads(json_path.read_text(encoding='utf-8'))
+            csv_lines = csv_path.read_text(encoding='utf-8').splitlines()
+            self.assertEqual(
+                [(row['type'], row['url']) for row in json_rows],
+                [
+                    ('sitemap', 'https://example.com/sitemap.xml'),
+                    ('page', 'https://example.com/a'),
+                    ('page', 'https://example.com/z'),
+                    ('image', 'https://example.com/z.webp'),
+                ],
+            )
+            self.assertIn('https://example.com/sitemap.xml', csv_lines[1])
+            self.assertIn('https://example.com/z.webp', csv_lines[-1])
+
     def test_main_warms_pages_and_images_and_writes_metadata(self):
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), FixtureHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

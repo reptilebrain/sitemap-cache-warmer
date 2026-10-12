@@ -169,7 +169,13 @@ def report_row(kind, url, status=None, headers=None, elapsed=None,
     }
 
 
+def report_sort_key(row):
+    kind_order = {'sitemap': 0, 'page': 1, 'image': 2}
+    return kind_order.get(row.get('type'), 3), str(row.get('url') or '')
+
+
 def write_reports(rows, csv_path=None, json_path=None):
+    rows = sorted(rows, key=report_sort_key)
     fields = list(rows[0]) if rows else [
         'type', 'url', 'status', 'cache_status', 'cache_header', 'cf_cache_status',
         'time_seconds', 'age_seconds', 'cache_control', 'cdn_cache_control',

@@ -25,6 +25,8 @@ Useful options:
 
 The terminal output stays compact by default. Use `--verbose` for detailed
 headers; JSON and CSV reports always include the full metadata.
+Report rows are sorted consistently by type and URL, even though requests run
+in parallel.
 
 The script supports sitemap indexes, gzip-compressed responses, redirects,
 common cache-status headers, image URLs in common HTML attributes, and

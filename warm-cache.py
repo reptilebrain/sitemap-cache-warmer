@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
 from html.parser import HTMLParser
 import json
+import math
 import sys
 import threading
 import time
@@ -15,8 +16,21 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 
+DEFAULT_DELAY = 0.5
+
+
 def clean(value):
     return ' '.join(str(value or '-').split())
+
+
+def parse_delay(value):
+    try:
+        delay = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('Delay must be a number') from exc
+    if delay < 0 or not math.isclose(delay * 10, round(delay * 10)):
+        raise argparse.ArgumentTypeError('Delay must be a non-negative multiple of 0.1 seconds')
+    return delay
 
 
 class RequestPacer:
@@ -159,8 +173,9 @@ def completed_tasks(items, worker, max_workers):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('sitemap', help='Full URL to sitemap.xml or sitemap index')
-    parser.add_argument('--delay', type=float, default=0,
-                        help='Minimum spacing between request starts in seconds (default: 0)')
+    parser.add_argument('--delay', type=parse_delay, default=DEFAULT_DELAY,
+                        help=f'Minimum spacing between request starts in 0.1-second '
+                             f'increments (default: {DEFAULT_DELAY:.1f})')
     parser.add_argument('--workers', type=int, default=12,
                         help='Maximum concurrent page/image requests (default: 12)')
     parser.add_argument('--timeout', type=float, default=30,
@@ -170,8 +185,8 @@ def main(argv=None):
     parser.add_argument('--csv', metavar='FILE', help='Write a CSV report')
     parser.add_argument('--json', metavar='FILE', help='Write a JSON report')
     args = parser.parse_args(argv)
-    if args.delay < 0 or args.timeout <= 0 or args.workers <= 0:
-        parser.error('Delay must be >= 0, timeout and workers must be > 0')
+    if args.timeout <= 0 or args.workers <= 0:
+        parser.error('Timeout and workers must be > 0')
     pacer = RequestPacer(args.delay)
     maps, pages, images = set(), set(), set()
     rows = []

@@ -7,6 +7,7 @@ import gzip
 from html.parser import HTMLParser
 import json
 import math
+import re
 import sys
 import threading
 import time
@@ -17,6 +18,17 @@ import xml.etree.ElementTree as ET
 
 
 DEFAULT_DELAY = 0.5
+DEFAULT_WORKERS = 12
+DEFAULT_TIMEOUT = 30
+DEFAULT_RETRIES = 1
+RETRY_BACKOFF = 0.5
+RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+CACHE_STATUS_HEADERS = (
+    'Cache-Status', 'CF-Cache-Status', 'CDN-Cache-Status',
+    'X-Cache-Status', 'X-Cache',
+)
+CACHE_STATUS_PATTERN = re.compile(
+    r'\b(hit|miss|stale|bypass|expired|revalidated)\b', re.IGNORECASE)
 
 
 def clean(value):
@@ -31,6 +43,17 @@ def parse_delay(value):
     if delay < 0 or not math.isclose(delay * 10, round(delay * 10)):
         raise argparse.ArgumentTypeError('Delay must be a non-negative multiple of 0.1 seconds')
     return delay
+
+
+def cache_details(headers):
+    for header_name in CACHE_STATUS_HEADERS:
+        value = headers.get(header_name)
+        if not value:
+            continue
+        match = CACHE_STATUS_PATTERN.search(value)
+        status = match.group(1).upper() if match else value
+        return status, f'{header_name}: {value}'
+    return None, None
 
 
 class RequestPacer:
@@ -75,6 +98,22 @@ def fetch(url, timeout, keep_body=False, pacer=None):
             body = gzip.decompress(body)
         return (response.status, response.headers, response.geturl(),
                 time.monotonic() - start, body)
+
+
+def fetch_with_retries(url, timeout, keep_body=False, pacer=None,
+                       retries=DEFAULT_RETRIES):
+    attempt = 0
+    while True:
+        try:
+            result = fetch(url, timeout, keep_body, pacer)
+        except OSError:
+            if attempt >= retries:
+                raise
+        else:
+            if result[0] not in RETRYABLE_STATUS_CODES or attempt >= retries:
+                return result
+        attempt += 1
+        time.sleep(RETRY_BACKOFF * attempt)
 
 
 class ImageFinder(HTMLParser):
@@ -126,24 +165,41 @@ def image_urls(body, headers, page_url):
 def report_row(kind, url, status=None, headers=None, elapsed=None,
                effective=None, error=None, lastmod=None):
     headers = headers or {}
+    cache_status, cache_header = cache_details(headers)
     return {
         'type': kind,
         'url': url,
         'status': status,
+        'cache_status': cache_status,
+        'cache_header': cache_header,
         'cf_cache_status': headers.get('CF-Cache-Status'),
         'time_seconds': round(elapsed, 3) if elapsed is not None else None,
         'age_seconds': headers.get('Age'),
+        'cache_control': headers.get('Cache-Control'),
+        'cdn_cache_control': headers.get('CDN-Cache-Control'),
+        'surrogate_control': headers.get('Surrogate-Control'),
+        'expires': headers.get('Expires'),
+        'etag': headers.get('ETag'),
         'last_modified': headers.get('Last-Modified'),
+        'vary': headers.get('Vary'),
         'sitemap_lastmod': lastmod,
         'redirect': effective if effective and effective != url else None,
         'error': str(error) if error else None,
     }
 
 
+def report_sort_key(row):
+    kind_order = {'sitemap': 0, 'page': 1, 'image': 2}
+    return kind_order.get(row.get('type'), 3), str(row.get('url') or '')
+
+
 def write_reports(rows, csv_path=None, json_path=None):
+    rows = sorted(rows, key=report_sort_key)
     fields = list(rows[0]) if rows else [
-        'type', 'url', 'status', 'cf_cache_status', 'time_seconds',
-        'age_seconds', 'last_modified', 'sitemap_lastmod', 'redirect', 'error']
+        'type', 'url', 'status', 'cache_status', 'cache_header', 'cf_cache_status',
+        'time_seconds', 'age_seconds', 'cache_control', 'cdn_cache_control',
+        'surrogate_control', 'expires', 'etag', 'last_modified', 'vary',
+        'sitemap_lastmod', 'redirect', 'error']
     if csv_path:
         with open(csv_path, 'w', newline='', encoding='utf-8') as output:
             writer = csv.DictWriter(output, fieldnames=fields)
@@ -176,23 +232,28 @@ def main(argv=None):
     parser.add_argument('--delay', type=parse_delay, default=DEFAULT_DELAY,
                         help=f'Minimum spacing between request starts in 0.1-second '
                              f'increments (default: {DEFAULT_DELAY:.1f})')
-    parser.add_argument('--workers', type=int, default=12,
-                        help='Maximum concurrent page/image requests (default: 12)')
-    parser.add_argument('--timeout', type=float, default=30,
-                        help='Socket timeout in seconds (default: 30)')
+    parser.add_argument('--workers', type=int, default=DEFAULT_WORKERS,
+                        help=f'Maximum concurrent page/image requests '
+                             f'(default: {DEFAULT_WORKERS})')
+    parser.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT,
+                        help=f'Socket timeout in seconds (default: {DEFAULT_TIMEOUT})')
+    parser.add_argument('--retries', type=int, default=DEFAULT_RETRIES,
+                        help=f'Retries for transient failures (default: {DEFAULT_RETRIES})')
     parser.add_argument('--no-images', action='store_true',
                         help='Do not fetch images referenced by pages')
+    parser.add_argument('--verbose', action='store_true',
+                        help='Show detailed cache and modification headers')
     parser.add_argument('--csv', metavar='FILE', help='Write a CSV report')
     parser.add_argument('--json', metavar='FILE', help='Write a JSON report')
     args = parser.parse_args(argv)
-    if args.timeout <= 0 or args.workers <= 0:
-        parser.error('Timeout and workers must be > 0')
+    if args.timeout <= 0 or args.workers <= 0 or args.retries < 0:
+        parser.error('Timeout and workers must be > 0; retries must be >= 0')
     pacer = RequestPacer(args.delay)
     maps, pages, images = set(), set(), set()
     rows = []
     pending = [args.sitemap]
     count = failures = map_failures = image_failures = 0
-    print(f'{"HTTP":<5} {"CF-CACHE":<12} {"TIME_s":>8} {"AGE_s":>7}  URL', flush=True)
+    print(f'{"HTTP":<5} {"CACHE":<12} {"TIME_s":>8} {"AGE_s":>7}  URL', flush=True)
     while pending:
         sitemap = pending.pop(0)
         if sitemap in maps:
@@ -200,7 +261,8 @@ def main(argv=None):
         maps.add(sitemap)
         print(f'Reading sitemap: {clean(sitemap)}', file=sys.stderr, flush=True)
         try:
-            status, _, _, _, body = fetch(sitemap, args.timeout, True, pacer)
+            status, _, _, _, body = fetch_with_retries(
+                sitemap, args.timeout, True, pacer, args.retries)
             if not 200 <= status < 300:
                 raise ValueError(f'HTTP {status}')
             root = ET.fromstring(body)
@@ -233,8 +295,8 @@ def main(argv=None):
 
         def get_page(item):
             url, lastmod = item
-            status, headers, effective, elapsed, body = fetch(
-                url, args.timeout, not args.no_images, pacer)
+            status, headers, effective, elapsed, body = fetch_with_retries(
+                url, args.timeout, not args.no_images, pacer, args.retries)
             found = image_urls(body, headers, effective) if (
                 200 <= status < 300 and not args.no_images) else set()
             return url, lastmod, status, headers, effective, elapsed, found
@@ -244,14 +306,18 @@ def main(argv=None):
             count += 1
             try:
                 url, lastmod, status, headers, effective, elapsed, found = future.result()
+                cache_status, cache_header = cache_details(headers)
                 rows.append(report_row('page', url, status, headers, elapsed,
                                        effective, lastmod=lastmod))
-                print(f'{status:<5} {clean(headers.get("CF-Cache-Status")):<12} '
+                print(f'{status:<5} {clean(cache_status):<12} '
                       f'{elapsed:8.3f} {clean(headers.get("Age")):>7}  {clean(url)}', flush=True)
-                print(f'      Last-Modified: {clean(headers.get("Last-Modified"))}'
-                      f' | Sitemap lastmod: {clean(lastmod)}', flush=True)
-                if effective != url:
-                    print(f'      Redirect -> {clean(effective)}', flush=True)
+                if args.verbose:
+                    print(f'      Cache header: {clean(cache_header)}'
+                          f' | Cache-Control: {clean(headers.get("Cache-Control"))}', flush=True)
+                    print(f'      Last-Modified: {clean(headers.get("Last-Modified"))}'
+                          f' | Sitemap lastmod: {clean(lastmod)}', flush=True)
+                    if effective != url:
+                        print(f'      Redirect -> {clean(effective)}', flush=True)
                 if not 200 <= status < 300:
                     failures += 1
                 images.update(found)
@@ -262,18 +328,23 @@ def main(argv=None):
 
     if images:
         def get_image(image_url):
-            return image_url, fetch(image_url, args.timeout, pacer=pacer)
+            return image_url, fetch_with_retries(
+                image_url, args.timeout, pacer=pacer, retries=args.retries)
 
         for future, image_url in completed_tasks(images, get_image, args.workers):
             try:
                 image_url, (status, headers, effective, elapsed, _) = future.result()
+                cache_status, cache_header = cache_details(headers)
                 rows.append(report_row('image', image_url, status, headers,
                                        elapsed, effective))
-                print(f'IMG   {clean(headers.get("CF-Cache-Status")):<12} '
+                print(f'IMG   {clean(cache_status):<12} '
                       f'{elapsed:8.3f} {clean(headers.get("Age")):>7}  '
                       f'{clean(image_url)}', flush=True)
-                if effective != image_url:
-                    print(f'      Redirect -> {clean(effective)}', flush=True)
+                if args.verbose:
+                    print(f'      Cache header: {clean(cache_header)}'
+                          f' | Cache-Control: {clean(headers.get("Cache-Control"))}', flush=True)
+                    if effective != image_url:
+                        print(f'      Redirect -> {clean(effective)}', flush=True)
                 if not 200 <= status < 300:
                     image_failures += 1
             except (OSError, ValueError) as exc:
